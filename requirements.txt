@@ -1,0 +1,10 @@
+pandas
+pyarrow
+zstandard
+praw
+boto3
+pyspark
+python-dotenv
+psycopg2-binary
+transformers
+torch

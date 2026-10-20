@@ -1,0 +1,60 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.aws/
+aws_credentials*
+credentials
+credentials.*
+secrets/
+secrets.*
+*reddit*secret*
+praw.ini
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Data and local artifacts
+*.zst
+*.jsonl
+*.parquet
+/data/
+/local_data/
+/datasets/
+/downloads/
+/artifacts/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+checkpoints/
+checkpoint/
+.sparkStaging/
+
+# Editors, OS files, logs
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+logs/

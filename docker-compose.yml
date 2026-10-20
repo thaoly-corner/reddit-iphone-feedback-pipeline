@@ -1,0 +1,3 @@
+# Development scaffold. Service definitions and image versions are unresolved.
+# No services are started by this file.
+services: {}
