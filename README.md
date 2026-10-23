@@ -1,121 +1,112 @@
 # reddit-iphone-feedback-pipeline
 
-A Data Engineering course project for collecting, processing, storing, enriching,
-and preparing Reddit customer feedback about Apple iPhone for downstream analytics.
-This initial monorepo is a scaffold; pipeline logic and datasets are not included.
+End-to-end Data Engineering platform (CO5173) for collecting, processing, enriching, benchmarking, and serving customer feedback about Apple iPhone from Reddit using a **Medallion Lakehouse Architecture (Bronze -> Silver -> Gold -> Serving)** with pluggable **Main & Alternative Technologies**.
 
-## Data sources and architecture
+## Architecture & Pluggable Engine Matrix
 
-Historical data comes from Academic Torrents / ArcticShift Reddit dumps.
-Incremental data comes from the Reddit API through PRAW.
+Configured centrally in `config/pipeline_config.py` (`PipelineExecutionConfig`):
 
-```text
-Historical Reddit Dump -> Batch Ingestion -> Apache Spark -> Amazon S3 Data Lake
-Reddit API -> PRAW -> Apache Kafka -> Spark Structured Streaming -> Amazon S3 Data Lake
-S3 Gold Layer -> PostgreSQL / Amazon RDS for PostgreSQL -> Application Layer: TBD
-```
+- **Ingestion (`ingestion/`)**:
+  - **Historical Batch**: Torrent download (`ingestion/historical/download/`), streaming `.zst` decompression & Bronze Parquet generation (`ingestion/historical/extract/`), and statistical data profiling (`ingestion/historical/profiling/`).
+  - **Real-time Streaming**: Reddit API (`PRAW`) producer publishing to Apache Kafka (`ingestion/streaming/reddit/`).
+- **Silver Layer & NLP (`processing/batch/` & `nlp/`)**:
+  - **Main Tech**: PySpark DataFrame deduplication (`processing/batch/bronze_to_silver/spark_cleaner.py`), Regex Entity & Issue Taxonomy extraction (`nlp/`), and Vectorized Arrow Pandas UDF with Hugging Face RoBERTa (`nlp/sentiment/roberta_sentiment.py`).
+  - **Alternative Tech**: Distributed Rule/VADER-style Lexicon Pandas UDF (`nlp/sentiment/alternatives/lexicon_sentiment.py`), Hadoop MapReduce RDD (`processing/batch/bronze_to_silver/alternatives/hadoop_mapreduce_silver.py`), and DuckDB In-Process Vectorized SQL (`processing/batch/bronze_to_silver/alternatives/duckdb_vectorized_silver.py`).
+- **Gold Layer (`processing/batch/silver_to_gold/` & `processing/streaming/`)**:
+  - Generates 8 Gold Parquet Data Marts supporting **BR01 through BR08** (`gold_datamarts.py`).
+  - **Main Batch Tech**: Spark SQL Catalyst Vectorized Engine (`spark_sql`).
+  - **Alternative Batch Tech**: Hadoop MapReduce RDD (`alternatives/hadoop_mapreduce_gold.py`) and DuckDB BigLake Serverless SQL (`alternatives/duckdb_biglake_gold.py`).
+  - **Main Stream Tech (BR03 Anomaly Detection)**: Apache Flink Stateful Sliding Window (`processing/streaming/alternatives/apache_flink_engine.py`).
+  - **Alternative Stream Tech**: Spark Structured Streaming / Windowing (`processing/streaming/spark_structured_streaming.py`) and Kafka Streams KTable StateStore (`processing/streaming/alternatives/kafka_streams_engine.py`).
+- **Serving Layer (`serving/database/`)**:
+  - **Main Tech**: PostgreSQL (with SQLite local fallback) using **Galaxy / Fact Constellation Schema** (`galaxy`) in `postgres_loader.py` & `schema_ddl.sql`.
+  - **Alternative Tech**: Hive Metastore Catalog (`serving/database/alternatives/hive_metastore_catalog.py`), DuckDB BigLake Serverless, and alternative schema paradigms: **Kimball Star (`star`)**, **3NF Snowflake (`snowflake`)**, and **Flat One Big Table (`obt`)**.
+- **Evaluation & Testing (`tests/` & `docs/evaluation/`)**:
+  - Multi-criteria empirical benchmark (`tests/pipeline_benchmark.py`) measuring Latency ($P_{50}/P_{95}/P_{99}$), Throughput (records/s), Storage Footprint (KB), and Peak RAM Memory (KB) across all 5 pipeline stages.
 
-## Current technology stack
-
-- Python; pandas, pyarrow, and zstandard for data handling.
-- PRAW for Reddit API access and boto3 for AWS access.
-- Apache Kafka for messaging.
-- Apache Spark / PySpark for batch processing and Spark Structured Streaming.
-- Amazon S3 and Apache Parquet for lake storage.
-- Python, Hugging Face, and regex/rule-based extraction for NLP enrichment.
-- PostgreSQL / Amazon RDS for PostgreSQL, accessed with psycopg2.
-- Docker Compose for local containerized development; Git/GitHub for version control.
-- python-dotenv for local environment configuration.
-
-Apache Flink may later be considered for streaming benchmarks. It is not configured.
-Backend, frontend, visualization libraries, and application API design are **TBD**.
-The `application/` directory is a documentation-only placeholder.
-
-## Data lake
-
-Bronze preserves raw or near-raw in-scope records, keeping posts and comments
-separate. Silver deduplicates, handles missing values, normalizes timestamps and
-relationships, cleans text, and adds `iphone_model`, `ios_version`, `feature`,
-`issue_category`, `sentiment`, `feedback_type`, and `engagement_level`.
-Gold prepares analytical outputs for the serving database.
-
-See [data layers](docs/data/data_layers.md) for details.
-
-## Repository structure
+## Repository Structure (Zero Overlap)
 
 ```text
-reddit-iphone-feedback-pipeline/
-    ingestion/historical/download/
-    ingestion/historical/extract/
-    ingestion/historical/profiling/
-    ingestion/streaming/reddit/
-    processing/batch/bronze_to_silver/
-    processing/batch/enrichment/
-    processing/batch/silver_to_gold/
-    processing/streaming/
-    nlp/sentiment/
-    nlp/feature_detection/
-    nlp/issue_classification/
-    nlp/entity_extraction/
-    serving/database/
-    application/
-    infrastructure/docker/
-    infrastructure/aws/
-    infrastructure/kafka/
-    notebooks/
-    tests/
-    docs/architecture/
-    docs/data/
-    docs/evaluation/
-    scripts/
-    .env.example
-    .gitignore
-    docker-compose.yml
-    requirements.txt
-    README.md
+reddit-iphone-feedback-pipeline-main/
+├── config/
+│   ├── __init__.py
+│   └── pipeline_config.py
+├── ingestion/
+│   ├── historical/
+│   │   ├── download/
+│   │   │   └── torrent_downloader.py
+│   │   ├── extract/
+│   │   │   └── bronze_zst_ingestor.py
+│   │   └── profiling/
+│   │       └── data_profiler.py
+│   └── streaming/
+│       └── reddit/
+│           └── kafka_praw_producer.py
+├── nlp/
+│   ├── entity_extraction/
+│   │   └── regex_extractor.py
+│   ├── feature_detection/
+│   │   └── feature_detector.py
+│   ├── issue_classification/
+│   │   └── issue_classifier.py
+│   └── sentiment/
+│       ├── roberta_sentiment.py
+│       └── alternatives/
+│           └── lexicon_sentiment.py
+├── processing/
+│   ├── batch/
+│   │   ├── bronze_to_silver/
+│   │   │   ├── spark_cleaner.py
+│   │   │   └── alternatives/
+│   │   │       ├── duckdb_vectorized_silver.py
+│   │   │       └── hadoop_mapreduce_silver.py
+│   │   ├── enrichment/
+│   │   │   └── silver_enrichment.py
+│   │   └── silver_to_gold/
+│   │       ├── gold_datamarts.py
+│   │       └── alternatives/
+│   │           ├── duckdb_biglake_gold.py
+│   │           └── hadoop_mapreduce_gold.py
+│   └── streaming/
+│       ├── spark_structured_streaming.py
+│       └── alternatives/
+│           ├── apache_flink_engine.py
+│           └── kafka_streams_engine.py
+├── serving/
+│   └── database/
+│       ├── postgres_loader.py
+│       ├── schema_ddl.sql
+│       └── alternatives/
+│           └── hive_metastore_catalog.py
+├── notebooks/
+│   └── DE_project.ipynb
+├── scripts/
+│   └── run_pipeline.py
+├── tests/
+│   ├── pipeline_benchmark.py
+│   └── test_pipeline.py
+├── docs/
+│   ├── architecture/architecture.md
+│   ├── data/business_requirements.md
+│   ├── data/data_layers.md
+│   └── evaluation/benchmark_architecture_evaluation.md
+├── application/
+├── infrastructure/
+├── .env.example
+├── .gitignore
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
 ```
 
-Historical ingestion separates download, extraction, and profiling. Batch processing
-separates Bronze-to-Silver, enrichment, and Silver-to-Gold stages. NLP directories
-hold future enrichment modules; serving/database holds future database artifacts.
-Infrastructure directories reserve Docker, AWS, and Kafka configuration. Notebooks,
-tests, scripts, and evaluation directories are placeholders. Empty directories use
-`.gitkeep` so they can be tracked by Git. Python package markers will be added when
-importable modules exist.
+## Quick Start
 
-## Business requirements
-
-| ID | Requirement | Gold output |
-| --- | --- | --- |
-| BR01 | Customer Feedback Volume Monitoring | `feedback_volume` |
-| BR02 | Product Issue Identification | `issue_summary` |
-| BR03 | Emerging Issue Detection | `emerging_issues` |
-| BR04 | Customer Sentiment Analysis | `sentiment_summary` |
-| BR05 | Feature-level Feedback Analysis | `feature_feedback` |
-| BR06 | High-impact Complaint Identification | `high_impact_complaints` |
-| BR07 | Issue Trend Monitoring | `issue_trends` |
-| BR08 | iPhone Model / iOS Version Comparison | `model_comparison` |
-
-See [business requirements](docs/data/business_requirements.md).
-
-## Development workflow
-
-1. From this repository directory, create and activate a Python virtual environment:
-   `python3 -m venv .venv` then `source .venv/bin/activate`.
-2. Install the selected Python dependencies with `pip install -r requirements.txt`.
-   Versions are intentionally unresolved; validate Python, Java, Spark, and library
-   compatibility before running future jobs. PySpark needs a compatible Java runtime.
-3. Copy `.env.example` to `.env` and replace placeholders locally. Never commit
-   credentials or local data. Future Python entrypoints must explicitly load their
-   configuration; no entrypoints exist yet.
-4. Review the architecture and define the unresolved schemas, policies, versions,
-   and local services before implementing pipeline stages.
-5. Add focused validation under `tests/` as processing logic is implemented, and
-   document profiling and evaluation results in the corresponding directories.
-6. Review changes with Git when a repository is initialized by the developer.
-
-`docker-compose.yml` contains an empty service map. It documents the intended
-Compose entrypoint but cannot start a development stack until services are defined.
-No containers, downloads, AWS resources, or database objects are created by setup.
-
-See [architecture and unresolved decisions](docs/architecture/architecture.md).
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Run the end-to-end pipeline via CLI:
+   ```bash
+   python -m scripts.run_pipeline --silver-engine pyspark_roberta --batch-gold-engine spark_sql --stream-engine apache_flink --serving-backend postgres --schema-paradigm galaxy
+   ```
+3. Or open `notebooks/DE_project.ipynb` in Google Colab / Jupyter and upload `reddit-iphone-feedback-pipeline-main.zip` to run the interactive Medallion Lakehouse pipeline and full empirical benchmark suite.

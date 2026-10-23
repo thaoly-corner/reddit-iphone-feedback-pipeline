@@ -1,4 +1,5 @@
 pandas
+numpy
 pyarrow
 zstandard
 praw
@@ -6,5 +7,9 @@ boto3
 pyspark
 python-dotenv
 psycopg2-binary
+sqlalchemy
+duckdb
+kafka-python
 transformers
 torch
+tqdm

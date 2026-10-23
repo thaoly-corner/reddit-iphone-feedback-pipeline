@@ -1,51 +1,25 @@
-# Data Engineering architecture
+# Data Engineering Architecture (Medallion Lakehouse & Pluggable Alternative Engines)
 
 ```text
-Historical Reddit Dump (Academic Torrents)
-    -> Batch Ingestion
-    -> Apache Spark
-    -> Amazon S3 Data Lake
-
-Reddit API
-    -> PRAW
-    -> Apache Kafka
-    -> Spark Structured Streaming
-    -> Amazon S3 Data Lake
-
-S3 Gold Layer
-    -> PostgreSQL / Amazon RDS for PostgreSQL
-    -> Application Layer: TBD
+Historical Reddit Dump (Academic Torrents .zst)
+    -> Streaming Zstd Decompression & Subreddit Filtering (ingestion/historical/extract/)
+    -> Statistical Data Profiling (ingestion/historical/profiling/)
+    -> Bronze Layer (Parquet Snappy + SHA-256 Checksum)
+    -> Silver Layer Cleaning, Enrichment & NLP (processing/batch/bronze_to_silver/, enrichment/ & nlp/)
+       [Main: PySpark + RoBERTa Pandas UDF | Alternatives: Lexicon UDF, Hadoop MapReduce RDD, DuckDB Vectorized]
+    -> Gold Layer Data Marts BR01-BR08 (processing/batch/silver_to_gold/ & processing/streaming/)
+       [Main Batch: Spark SQL Catalyst | Alternatives: Hadoop MapReduce RDD, DuckDB BigLake]
+       [Main Stream (BR03): Apache Flink Stateful Window | Alternatives: Spark Structured Streaming, Kafka Streams]
+    -> Serving Layer (serving/database/)
+       [Main: PostgreSQL / SQLite Fallback with Galaxy Schema | Alternatives: DuckDB BigLake, Hive Metastore, Star/Snowflake/OBT Schemas]
 ```
 
-## Selected components
+## Pluggable Configuration (`config/pipeline_config.py`)
 
-Python is the main language. Amazon S3 stores Bronze, Silver, and Gold data in
-Apache Parquet. Apache Spark / PySpark handles batch processing and Spark
-Structured Streaming handles incremental processing. Python, Hugging Face
-(`transformers` and `torch`), and regex/rule-based extraction provide NLP enrichment.
-PostgreSQL / Amazon RDS for PostgreSQL provides serving storage. Docker Compose
-supports local containerized development; Git/GitHub supports version control.
+All pipeline stages are centrally orchestrated by `PipelineExecutionConfig`, `StorageConfig`, `DatabaseConfig`, and `DomainTaxonomyConfig` in `config/pipeline_config.py`:
 
-Apache Flink is only a possible later streaming alternative for benchmarking;
-it is not configured or required by this scaffold.
-
-## Application Layer: TBD
-
-Backend, frontend, and visualization technologies are unresolved. No application
-framework, visualization library, or application service is configured.
-
-## Open implementation decisions
-
-- Data scope: subreddits, date ranges, languages, and iPhone relevance rules.
-- Historical dump selection, download method, and incremental collection cadence.
-- Kafka topics, record keys, partitions, retention, and producer integration.
-- Spark, Python, Java, container image, and dependency versions and compatibility.
-- S3 bucket layout, partitions, schemas, schema evolution, and retention.
-- Deduplication keys, missing-value policy, late-data handling, watermarks,
-  checkpoints, replay behavior, and delivery guarantees.
-- NLP model selection, labels, extraction rules, evaluation, and thresholds.
-- Gold aggregation windows, metric definitions, and PostgreSQL schema/load strategy.
-- Local service definitions, AWS resource provisioning, region, and access roles.
-- Collection access requirements, data handling policy, and operational monitoring.
-- Backend, frontend, visualization, and application API design.
-
+- **Silver Engine (`silver_engine`)**: `"pyspark_roberta"` (default) | `"pyspark_lexicon"` | `"hadoop_mapreduce_silver"` | `"duckdb_vectorized_silver"`
+- **Batch Gold Engine (`batch_gold_engine`)**: `"spark_sql"` (default) | `"hadoop_mapreduce"` | `"duckdb_biglake"`
+- **Stream Anomaly Engine (`stream_engine`)**: `"apache_flink"` (default) | `"spark_streaming"` | `"kafka_streams"`
+- **Serving Backend (`serving_backend`)**: `"postgres"` (default) | `"duckdb_biglake"` | `"hive_metastore"` | `"sqlite_local"`
+- **Schema Paradigm (`schema_paradigm`)**: `"galaxy"` (default) | `"star"` | `"snowflake"` | `"obt"`
