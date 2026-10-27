@@ -1,30 +1,45 @@
 """
-Alternative / Optimal Stream Anomaly Engine ('apache_flink'):
-Apache Flink Stateful Event-Driven Sliding Window for BR03 Emerging Issues & Streaming Benchmark.
+Main stream anomaly engine selected by the 'apache_flink' configuration:
+Existing stateful sliding-window algorithm for BR03 and streaming benchmarks.
 """
 import time
 import tracemalloc
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
 from config.pipeline_config import StorageConfig
 
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
+
+
+EMERGING_ISSUES_SCHEMA = (
+    "feedback_date date, iphone_model string, feature_category string, issue_category string, "
+    "daily_volume long, epoch_days long, curr_3d_avg double, base_14d_avg double, "
+    "base_14d_std double, growth_rate_pct double, z_score double, is_anomaly boolean"
+)
+
 
 def run_streaming_emerging_issues_engine(
     storage_cfg: StorageConfig,
-    stream_engine: str = "apache_flink"
+    stream_engine: str = "apache_flink",
+    *,
+    spark: 'SparkSession | None' = None,
 ) -> pd.DataFrame:
     """
     Thuc thi tinh toan BR03 (`emerging_issues`) bang cong nghe Stream duoc cau hinh
     ('apache_flink', 'kafka_streams', hoac 'spark_streaming') va ghi xuong Gold Parquet.
     """
-    pdf = pd.read_parquet(
-        storage_cfg.silver_posts_path,
-        columns=["post_id", "feedback_date", "iphone_model", "feature_category", "issue_category"]
-    )
+    columns = ["post_id", "feedback_date", "iphone_model", "feature_category", "issue_category"]
+    if spark is not None:
+        pdf = spark.read.parquet(storage_cfg.silver_posts_path).select(*columns).toPandas()
+    else:
+        if storage_cfg.use_s3:
+            raise ValueError("Pass spark= for S3/MinIO reads and writes using the configured S3A settings")
+        pdf = pd.read_parquet(storage_cfg.silver_posts_path, columns=columns)
     pdf = pdf[pdf["issue_category"] != "Non-Defect / General Inquiry"].copy()
     daily = (
         pdf.groupby(["feedback_date", "iphone_model", "feature_category", "issue_category"])
@@ -75,8 +90,16 @@ def run_streaming_emerging_issues_engine(
             "is_anomaly": is_anom
         })
 
-    emerging_df = pd.DataFrame(out_rows)
-    if not emerging_df.empty:
+    emerging_df = pd.DataFrame(out_rows, columns=[
+        "feedback_date", "iphone_model", "feature_category", "issue_category",
+        "daily_volume", "epoch_days", "curr_3d_avg", "base_14d_avg", "base_14d_std",
+        "growth_rate_pct", "z_score", "is_anomaly",
+    ])
+    if spark is not None:
+        # Explicit types also allow overwriting stale outputs with an empty mart.
+        output = spark.createDataFrame(emerging_df.to_dict("records"), schema=EMERGING_ISSUES_SCHEMA)
+        output.write.mode("overwrite").parquet(f"{storage_cfg.gold_base_path}/emerging_issues")
+    elif not emerging_df.empty:
         out_dir = Path(f"{storage_cfg.gold_base_path}/emerging_issues")
         out_dir.mkdir(parents=True, exist_ok=True)
         for old_f in out_dir.glob("*.parquet"):

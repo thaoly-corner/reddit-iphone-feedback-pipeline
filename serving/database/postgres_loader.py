@@ -8,11 +8,17 @@ Ho tro nap Idempotent Upsert va phuc vu truy van tren ca 4 kien truc Schema:
 Tren cac he quan tri: PostgreSQL (Supabase/Neon), SQLite Local hoac DuckDB BigLake.
 """
 from pathlib import Path
-from typing import Dict, Any
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import Dict, Any, TYPE_CHECKING
 import pandas as pd
 from sqlalchemy import create_engine, text
 
 from config.pipeline_config import StorageConfig, DatabaseConfig, PipelineExecutionConfig
+from config.gold_marts import GOLD_MART_NAMES
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 
 class UnifiedServingPipelineLoader:
@@ -25,10 +31,48 @@ class UnifiedServingPipelineLoader:
         exec_cfg: PipelineExecutionConfig = PipelineExecutionConfig()
     ):
         self.storage_cfg = storage_cfg
-        self.db_cfg = db_cfg
+        self.db_cfg = replace(db_cfg, use_sqlite_fallback=True) if exec_cfg.serving_backend == "sqlite_local" else db_cfg
         self.exec_cfg = exec_cfg
-        self.is_sqlite = db_cfg.use_sqlite_fallback or (exec_cfg.serving_backend == "sqlite_local")
-        self.engine = create_engine(db_cfg.sqlalchemy_url, pool_pre_ping=True)
+        self.is_sqlite = self.db_cfg.use_sqlite_fallback
+        if self.is_sqlite and self.db_cfg.sqlite_path != ":memory:":
+            Path(self.db_cfg.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+        self.engine = create_engine(self.db_cfg.sqlalchemy_url, pool_pre_ping=True)
+
+    def _read_gold_mart(self, name: str, spark: 'SparkSession | None' = None) -> pd.DataFrame:
+        if name not in GOLD_MART_NAMES:
+            raise ValueError(f"Unknown Gold mart: {name}")
+        path = f"{self.storage_cfg.gold_base_path}/{name}"
+        if spark is not None:
+            # Spark already has the correct AWS anonymous/MinIO S3A settings.
+            return spark.read.parquet(path).toPandas()
+        if self.storage_cfg.use_s3:
+            raise ValueError("Pass spark= to load S3/MinIO Gold with the configured S3A credentials")
+        return pd.read_parquet(path)
+
+    def sync_gold_marts(
+        self,
+        spark: 'SparkSession | None' = None,
+        mart_names: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Refresh gold_* serving copies; S3 Gold remains canonical.
+
+        Gold aggregates are collected on the driver for the existing SQLAlchemy
+        adapter. Use mart_names for older datasets containing only legacy marts.
+        """
+        names = tuple(GOLD_MART_NAMES if mart_names is None else mart_names)
+        if not set(names).issubset(GOLD_MART_NAMES):
+            raise ValueError("mart_names must contain only registered Gold mart names")
+        counts = {}
+        for name in names:
+            frame = self._read_gold_mart(name, spark)
+            table = f"gold_{name}"
+            with self.engine.begin() as conn:
+                frame.to_sql(table, conn, if_exists="replace", index=False, chunksize=1000, method="multi")
+                count = int(conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+                if count != len(frame):
+                    raise RuntimeError(f"Serving row count mismatch for {table}: {count} != {len(frame)}")
+            counts[table] = count
+        return counts
 
     def initialize_schema(self) -> None:
         """Khoi tao bang va Index cho ca Star, Snowflake, Galaxy va OBT Schema."""
@@ -136,12 +180,11 @@ class UnifiedServingPipelineLoader:
             for stmt in stmts:
                 conn.execute(text(stmt))
 
-    def sync_dimensions_and_facts(self) -> Dict[str, Any]:
+    def sync_dimensions_and_facts(self, spark: 'SparkSession | None' = None) -> Dict[str, Any]:
         """Dong bo du lieu tu Gold Parquet vao cac bang cua Schema Paradigm duoc cau hinh."""
-        gold_base = self.storage_cfg.gold_base_path
-        df_summary = pd.read_parquet(f"{gold_base}/issue_summary")
-        df_emerging = pd.read_parquet(f"{gold_base}/emerging_issues")
-        df_complaints = pd.read_parquet(f"{gold_base}/high_impact_complaints")
+        df_summary = self._read_gold_mart("issue_summary", spark)
+        df_emerging = self._read_gold_mart("emerging_issues", spark)
+        df_complaints = self._read_gold_mart("high_impact_complaints", spark)
 
         with self.engine.begin() as conn:
             unique_dates = pd.to_datetime(df_summary["feedback_date"].unique())

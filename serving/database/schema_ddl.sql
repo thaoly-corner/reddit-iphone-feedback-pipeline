@@ -130,6 +130,23 @@ CREATE TABLE IF NOT EXISTS snow_fact_feedback_summary (
 );
 
 -- ============================================================================
+-- Compatibility table already populated by the existing OBT loader.
+CREATE TABLE IF NOT EXISTS obt_feedback_wide (
+    date_key INT NOT NULL,
+    full_date DATE NOT NULL,
+    model_name TEXT NOT NULL,
+    series_name TEXT NOT NULL,
+    os_version TEXT NOT NULL,
+    feature_name TEXT NOT NULL,
+    issue_name TEXT NOT NULL,
+    total_posts INT,
+    total_comments INT,
+    negative_count INT,
+    avg_sentiment_score DOUBLE PRECISION,
+    avg_engagement_score DOUBLE PRECISION,
+    UNIQUE (date_key, model_name, os_version, feature_name, issue_name)
+);
+
 -- 4. INDEXING STRATEGY (COMPOSITE & PARTIAL B-TREE INDEXES)
 -- ============================================================================
 

@@ -3,6 +3,7 @@ Tang Gold: Dieu phoi Pluggable Engine (Spark SQL Catalyst | Hadoop MapReduce | D
 & Apache Flink | Kafka Streams | Spark Streaming) theo PipelineExecutionConfig.
 """
 from typing import Dict, Optional
+import warnings
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -12,6 +13,40 @@ from processing.batch.silver_to_gold.alternatives.hadoop_mapreduce_gold import b
 from processing.batch.silver_to_gold.alternatives.duckdb_biglake_gold import build_gold_issue_summary_duckdb
 from processing.streaming.spark_structured_streaming import compute_emerging_issues_spark_window
 from processing.streaming.alternatives.apache_flink_engine import run_streaming_emerging_issues_engine
+from processing.batch.silver_to_gold.gold_queries import RECURRING_ISSUES_SQL, SUPPORT_DEMAND_SQL
+
+
+def build_recurring_issues_mart(silver_df: DataFrame) -> DataFrame:
+    """Issue x month; recurring means present in >= 2 distinct monthly periods.
+
+    active_period_count is the total observed months for the issue across the
+    dataset. recurrence_count counts repeat months after the first (N - 1).
+    """
+    silver_df.createOrReplaceTempView("_voc_recurring_input")
+    return silver_df.sparkSession.sql(RECURRING_ISSUES_SQL)
+
+
+def build_support_demand_mart(silver_df: DataFrame) -> DataFrame:
+    """Monthly question demand by support category, model and iOS version.
+
+    For category/month totals, sum question_count; roll up averages using
+    question_count as weight. Legacy alternative Silver engines are not
+    classified here: they receive an empty mart with the same schema.
+    """
+    if not {"is_question", "support_category"}.issubset(silver_df.columns):
+        warnings.warn(
+            "Silver has no support enrichment; support_demand will be empty. "
+            "Use the main PySpark Silver pipeline to populate it.",
+            UserWarning,
+            stacklevel=2,
+        )
+        silver_df = (
+            silver_df.limit(0)
+            .withColumn("is_question", F.lit(False))
+            .withColumn("support_category", F.lit(None).cast("string"))
+        )
+    silver_df.createOrReplaceTempView("_voc_support_input")
+    return silver_df.sparkSession.sql(SUPPORT_DEMAND_SQL)
 
 
 def build_gold_datamarts(
@@ -20,7 +55,7 @@ def build_gold_datamarts(
     exec_cfg: Optional[PipelineExecutionConfig] = None
 ) -> Dict[str, DataFrame]:
     """
-    Doc du lieu Silver Parquet va xuat 8 tap du lieu Gold Parquet phuc vu 8 BR (BR01 -> BR08).
+    Preserve BR01 -> BR08 and add recurring issues and support demand marts.
     Tu dong chuyen doi Engine tinh toan theo PipelineExecutionConfig.
     """
     if exec_cfg is None:
@@ -75,7 +110,7 @@ def build_gold_datamarts(
 
     # BR03: Emerging Issues Detection (Pluggable Stream / Window Engine)
     if exec_cfg.stream_engine in ("apache_flink", "kafka_streams"):
-        run_streaming_emerging_issues_engine(storage_cfg, stream_engine=exec_cfg.stream_engine)
+        run_streaming_emerging_issues_engine(storage_cfg, stream_engine=exec_cfg.stream_engine, spark=spark)
         br03_df = spark.read.parquet(f"{gold_base}/emerging_issues")
     else:
         br03_df = compute_emerging_issues_spark_window(spark, storage_cfg)
@@ -166,6 +201,11 @@ def build_gold_datamarts(
     )
     br08_df.write.mode("overwrite").parquet(f"{gold_base}/model_comparison")
     marts["model_comparison"] = br08_df
+
+    marts["recurring_issues"] = build_recurring_issues_mart(silver_df)
+    marts["support_demand"] = build_support_demand_mart(silver_df)
+    for name in ("recurring_issues", "support_demand"):
+        marts[name].write.mode("overwrite").parquet(f"{gold_base}/{name}")
 
     silver_df.unpersist()
     return marts

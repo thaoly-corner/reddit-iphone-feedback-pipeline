@@ -6,26 +6,94 @@ and benchmarks all 4 Silver engines ('pyspark_roberta', 'pyspark_lexicon',
 """
 import time
 import tracemalloc
-from typing import Optional, Dict, Any, List
-import pandas as pd
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.types import StringType, FloatType, IntegerType
+from typing import Any
 
-from config.pipeline_config import StorageConfig, DomainTaxonomyConfig, PipelineExecutionConfig
-from processing.batch.bronze_to_silver.spark_cleaner import build_spark_session, deduplicate_bronze_posts
-from processing.batch.bronze_to_silver.alternatives.hadoop_mapreduce_silver import run_silver_via_hadoop_mapreduce
-from processing.batch.bronze_to_silver.alternatives.duckdb_vectorized_silver import run_silver_via_duckdb_vectorized
+import pandas as pd
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.column import Column
+from pyspark.sql.types import FloatType, IntegerType, StringType
+
+from config.pipeline_config import (
+    DomainTaxonomyConfig,
+    PipelineExecutionConfig,
+    StorageConfig,
+)
 from nlp.entity_extraction.regex_extractor import create_text_recovery_and_taxonomy_udf
-from nlp.sentiment.roberta_sentiment import transformer_sentiment_udf
 from nlp.sentiment.alternatives.lexicon_sentiment import lexicon_sentiment_pandas_udf
+from nlp.sentiment.roberta_sentiment import transformer_sentiment_udf
+from processing.batch.bronze_to_silver.alternatives.duckdb_vectorized_silver import (
+    run_silver_via_duckdb_vectorized,
+)
+from processing.batch.bronze_to_silver.alternatives.hadoop_mapreduce_silver import (
+    run_silver_via_hadoop_mapreduce,
+)
+from processing.batch.bronze_to_silver.spark_cleaner import (
+    # build_spark_session,
+    deduplicate_bronze_posts,
+)
+
+QUESTION_PATTERN = (
+    r"(?i)"
+    r"(\?|"
+    r"\bhow do i\b|"
+    r"\bhow can i\b|"
+    r"\bhow to\b|"
+    r"\bwhy is\b|"
+    r"\bwhy does\b|"
+    r"\bwhy won't\b|"
+    r"\bcan anyone\b|"
+    r"\bdoes anyone\b|"
+    r"\banyone know\b|"
+    r"\bneed help\b|"
+    r"\bplease help\b)"
+)
+
+def build_support_category_expr(
+    taxonomy_cfg: DomainTaxonomyConfig
+) -> Column:
+    support_category_expr = None
+
+    for category, keywords in taxonomy_cfg.support_taxonomy.items():
+        category_condition = None
+
+        for keyword in keywords:
+            condition = F.lower(
+                F.col("clean_text")
+            ).contains(keyword.lower())
+
+            category_condition = (
+                condition
+                if category_condition is None
+                else category_condition | condition
+            )
+
+        # Empty keyword lists should behave like an empty taxonomy, not F.when(None).
+        if category_condition is None:
+            continue
+
+        if support_category_expr is None:
+            support_category_expr = F.when(
+                category_condition,
+                F.lit(category),
+            )
+        else:
+            support_category_expr = support_category_expr.when(
+                category_condition,
+                F.lit(category),
+            )
+    if support_category_expr is None:
+        return F.lit("Other Support")
+    return support_category_expr.otherwise(
+        F.lit("Other Support")
+    )
 
 
 def run_silver_pipeline(
     spark: SparkSession,
     storage_cfg: StorageConfig,
     taxonomy_cfg: DomainTaxonomyConfig,
-    exec_cfg: Optional[PipelineExecutionConfig] = None
+    exec_cfg: PipelineExecutionConfig | None = None
 ) -> DataFrame:
     """
     Thuc thi day du Pipeline Tang Silver (Bronze Parquet -> Silver Partitioned Parquet)
@@ -44,7 +112,7 @@ def run_silver_pipeline(
         return spark.read.parquet(storage_cfg.silver_posts_path)
 
     # Default PySpark DataFrame Pipeline ('pyspark_roberta' or 'pyspark_lexicon')
-    bronze_df = spark.read.parquet(storage_cfg.bronze_posts_parquet)
+    bronze_df = spark.read.parquet(storage_cfg.bronze_posts_path)
     dedup_df = deduplicate_bronze_posts(bronze_df)
 
     extraction_udf = create_text_recovery_and_taxonomy_udf(taxonomy_cfg)
@@ -92,8 +160,26 @@ def run_silver_pipeline(
         .drop("_sent")
     )
 
-    final_silver_df = (
+
+    support_category_expr = build_support_category_expr(taxonomy_cfg)
+
+    with_support_df = (
         with_sentiment_df
+        .withColumn(
+            "is_question",
+            F.col("clean_text").rlike(QUESTION_PATTERN)
+        )
+        .withColumn(
+            "support_category",
+            F.when(
+                F.col("is_question"),
+                support_category_expr
+            ).otherwise(F.lit(None).cast(StringType()))
+        )
+    )
+
+    final_silver_df = (
+        with_support_df
         .withColumn("engagement_score", F.col("reddit_score") + (F.lit(2) * F.col("num_comments")))
         .withColumn(
             "impact_index",
@@ -128,11 +214,16 @@ def benchmark_silver_enrichment_engines(
     """
     Thuc nghiem doi chuan 4 cong nghe Tang Silver (Bronze -> Silver Enrichment & NLP Benchmark).
     """
-    bronze_df = spark.read.parquet(storage_cfg.bronze_posts_parquet).limit(sample_limit).cache()
+    bronze_df = (
+        spark.read
+        .parquet(storage_cfg.bronze_posts_path)
+        .limit(sample_limit)
+        .cache()
+    )
     n_rows = bronze_df.count()
     extraction_udf = create_text_recovery_and_taxonomy_udf(taxonomy_cfg)
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     # 1. DuckDB In-Process SQL + Vectorized Python Lexicon
     tracemalloc.start()

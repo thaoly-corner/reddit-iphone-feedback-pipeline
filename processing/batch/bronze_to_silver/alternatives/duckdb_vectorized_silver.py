@@ -23,6 +23,9 @@ def run_silver_via_duckdb_vectorized(
     import duckdb
     con = duckdb.connect()
     bronze_path = storage_cfg.bronze_posts_parquet
+    if not storage_cfg.use_s3 and Path(bronze_path).is_dir():
+        # The compatibility alias now points at a multi-month dataset root.
+        bronze_path = str(Path(bronze_path) / "**" / "*.parquet")
 
     dedup_pdf = con.execute(f"""
         SELECT * EXCLUDE (_rn)

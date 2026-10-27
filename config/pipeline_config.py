@@ -7,9 +7,26 @@ Default configuration is locked to the empirically proven optimal architecture:
 - Serving Backend   : 'postgres' (8.05ms mean latency, 39.12 KB peak RAM, 88 KB compact storage)
 - Schema Paradigm   : 'galaxy' (P99 = 5.48ms, supports multi-fact BR01-BR08 drill-across on Conformed Star Dims)
 """
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal
+from typing import Literal, cast
+from urllib.parse import quote, urlencode
+
+
+def _env(name: str, default: str = "", legacy_name: str | None = None) -> str:
+    """Read at config construction time, after the caller loads .env."""
+    value = os.getenv(name)
+    if value is None and legacy_name is not None:
+        value = os.getenv(legacy_name)
+    return default if value is None else value
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = _env(name, str(default)).strip().lower()
+    if value not in {"true", "false", "1", "0", "yes", "no"}:
+        raise ValueError(f"{name} must be true or false")
+    return value in {"true", "1", "yes"}
 
 
 @dataclass(frozen=True)
@@ -35,13 +52,35 @@ class PipelineExecutionConfig:
 @dataclass(frozen=True)
 class StorageConfig:
     """Quan ly duong dan Data Lakehouse (Ho tro Google Drive/Local hoac S3A/MinIO)."""
-    project_root: Path = Path("/content/drive/MyDrive/DE")
-    raw_local_dir: Path = Path("/content/reddit_2026_07")
-    use_s3: bool = False
-    s3_endpoint: str = "http://localhost:9000"
-    s3_access_key: str = "minioadmin"
-    s3_secret_key: str = "minioadmin"
-    s3_bucket: str = "s3a://reddit-lake"
+    project_root: Path = field(default_factory=lambda: Path(
+        _env("HISTORICAL_WORK_DIR", "/content/drive/MyDrive/DE")
+    ))
+    raw_local_dir: Path = field(default_factory=lambda: Path(
+        _env("RAW_DIR", "/content/drive/MyDrive/DE/raw")
+    ))
+
+    use_s3: bool = field(default_factory=lambda: _env_bool("USE_S3", True))
+    s3_provider: Literal["aws", "minio"] = field(
+        default_factory=lambda: cast(Literal["aws", "minio"], _env("S3_PROVIDER", "aws"))
+    )
+
+    # MinIO-specific settings.
+    s3_endpoint: str = field(default_factory=lambda: _env("S3_ENDPOINT", "http://localhost:9000"))
+    s3_access_key: str = field(default_factory=lambda: _env("S3_ACCESS_KEY", "minioadmin"), repr=False)
+    s3_secret_key: str = field(default_factory=lambda: _env("S3_SECRET_KEY", "minioadmin"), repr=False)
+
+    #AWS S3 settings (for production deployment on AWS S3)
+    s3_bucket: str = field(default_factory=lambda: _env("S3_BUCKET", legacy_name="S3_BUCKET_NAME"))
+    aws_region: str = field(default_factory=lambda: _env("AWS_DEFAULT_REGION").strip() or "ap-southeast-1")
+
+    def __post_init__(self) -> None:
+        if self.use_s3 and self.s3_provider not in {"aws", "minio"}:
+            raise ValueError("S3_PROVIDER must be aws or minio")
+        # Older callers supplied s3a://bucket rather than a bare bucket name.
+        bucket = self.s3_bucket.strip().removeprefix("s3a://").removeprefix("s3://").strip("/")
+        if bucket and "/" in bucket:
+            raise ValueError("S3_BUCKET must contain a bucket name, not an object path")
+        object.__setattr__(self, "s3_bucket", bucket)
 
     @property
     def filtered_dir(self) -> Path:
@@ -56,25 +95,50 @@ class StorageConfig:
         return self.project_root / "profiling"
 
     @property
-    def posts_filtered_jsonl(self) -> Path:
-        return self.filtered_dir / "iphone_posts_2026_07.jsonl"
+    def bronze_posts_parquet(self) -> str:
+        """Backward-compatible alias. Prefer bronze_posts_path."""
+        return self.bronze_posts_path
 
     @property
-    def bronze_posts_parquet(self) -> str:
+    def bronze_posts_path(self) -> str:
+        """
+        Base Bronze path containing all monthly partitions.
+
+        Example:
+        s3a://bucket/bronze/posts/
+            year=2026/month=05/
+            year=2026/month=06/
+            year=2026/month=07/
+        """
         if self.use_s3:
-            return f"{self.s3_bucket}/bronze/posts/iphone_posts_2026_07.parquet"
-        return str(self.parquet_dir / "iphone_posts_2026_07.parquet")
+            if not self.s3_bucket:
+                raise ValueError("S3_BUCKET is required when use_s3=True")
+            return (
+                f"s3a://{self.s3_bucket}/bronze/posts"
+            )
+
+        return str(self.parquet_dir)
 
     @property
     def silver_posts_path(self) -> str:
         if self.use_s3:
-            return f"{self.s3_bucket}/silver/posts"
+            if not self.s3_bucket:
+                raise ValueError("S3_BUCKET is required when use_s3=True")
+            return (
+                f"s3a://{self.s3_bucket}/silver/posts"
+            )
         return str(self.project_root / "silver" / "posts")
 
     @property
     def gold_base_path(self) -> str:
         if self.use_s3:
-            return f"{self.s3_bucket}/gold"
+            if not self.s3_bucket:
+                raise ValueError(
+                    "S3_BUCKET is required when use_s3=True"
+                )
+            return (
+                f"s3a://{self.s3_bucket}/gold"
+            )
         return str(self.project_root / "gold")
 
     @property
@@ -97,13 +161,20 @@ class StorageConfig:
 @dataclass(frozen=True)
 class DatabaseConfig:
     """Cau hinh ket noi Serving Layer (PostgreSQL / Supabase / Neon / SQLite Fallback)."""
-    host: str = "localhost"
-    port: int = 5432
-    database: str = "voc_analytics"
-    user: str = "postgres"
-    password: str = "postgres"
-    use_sqlite_fallback: bool = True
-    sqlite_path: str = "/content/drive/MyDrive/DE/serving_voc_star.db"
+    host: str = field(default_factory=lambda: _env("DB_HOST", "localhost", "POSTGRES_HOST"))
+    port: int = field(default_factory=lambda: int(_env("DB_PORT", "5432", "POSTGRES_PORT")))
+    database: str = field(default_factory=lambda: _env("DB_NAME", "voc_analytics", "POSTGRES_DB"))
+    user: str = field(default_factory=lambda: _env("DB_USER", legacy_name="POSTGRES_USER"))
+    password: str = field(default_factory=lambda: _env("DB_PASSWORD", legacy_name="POSTGRES_PASSWORD"), repr=False)
+    use_sqlite_fallback: bool = field(default_factory=lambda: _env_bool(
+        "USE_SQLITE_FALLBACK", not bool(_env("DB_HOST", legacy_name="POSTGRES_HOST"))
+    ))
+    sqlite_path: str = field(default_factory=lambda: _env("SQLITE_PATH", "serving_voc_star.db"))
+    sslmode: str = field(default_factory=lambda: _env("DB_SSLMODE"))
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.port <= 65535:
+            raise ValueError("DB_PORT must be between 1 and 65535")
 
     @property
     def jdbc_url(self) -> str:
@@ -113,7 +184,13 @@ class DatabaseConfig:
     def sqlalchemy_url(self) -> str:
         if self.use_sqlite_fallback:
             return f"sqlite:///{self.sqlite_path}"
-        return f"postgresql+psycopg2://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+        if not self.host or not self.user or not self.database:
+            raise ValueError("DB_HOST, DB_USER and DB_NAME are required for PostgreSQL")
+        url = (
+            f"postgresql+psycopg2://{quote(self.user, safe='')}:{quote(self.password, safe='')}"
+            f"@{self.host}:{self.port}/{quote(self.database, safe='')}"
+        )
+        return f"{url}?{urlencode({'sslmode': self.sslmode})}" if self.sslmode else url
 
 
 @dataclass(frozen=True)
@@ -125,7 +202,7 @@ class DomainTaxonomyConfig:
     iphone_model_regex: str = r"(?i)\b(iphone\s*(?:1[1-7]|[3-9]|x[rs]?|se)(?:\s*(?:pro\s*max|pro|plus|mini|air))?)\b"
     ios_version_regex: str = r"(?i)\b(ios\s*(?:1[5-9]|2[0-8])(?:\.\d+(?:\.\d+)?)?(?:\s*beta)?)\b"
 
-    issue_taxonomy: Dict[str, Dict[str, List[str]]] = field(default_factory=lambda: {
+    issue_taxonomy: dict[str, dict[str, list[str]]] = field(default_factory=lambda: {
         "Battery & Thermal": {
             "Rapid Battery Drain": ["battery drain", "drain fast", "battery life", "battery issue", "battery issues", "battery health", "tụt pin", "hao pin"],
             "Thermal Overheating": ["overheat", "overheating", "gets hot", "running hot", "warm", "thermal", "nóng máy"],
@@ -149,4 +226,79 @@ class DomainTaxonomyConfig:
             "UI Lag & System Freeze": ["lag", "lagging", "stutter", "freeze", "bootloop", "crash", "restarting"],
             "Search & Settings Bug": ["settings search", "search broke", "search still broke", "spotlight", "automatic translation", "system data", "storage", "icloud", "wallet"]
         }
+    })
+
+    support_taxonomy: dict[str, list[str]] = field(default_factory=lambda: {
+        "Battery & Charging Support": [
+            "battery",
+            "battery drain",
+            "battery health",
+            "charging",
+            "charger",
+            "magsafe",
+            "not charging",
+            "slow charge",
+        ],
+        "Connectivity Support": [
+            "wifi",
+            "bluetooth",
+            "airdrop",
+            "cellular",
+            "mobile data",
+            "no service",
+            "carplay",
+            "hotspot",
+        ],
+        "Camera & Photos Support": [
+            "camera",
+            "photo",
+            "photos",
+            "video",
+            "focus",
+            "exposure",
+            "lens",
+        ],
+        "Display & Touch Support": [
+            "screen",
+            "display",
+            "touch",
+            "keyboard",
+            "brightness",
+            "green line",
+            "flicker",
+        ],
+        "iOS & Settings Support": [
+            "ios",
+            "settings",
+            "update",
+            "software update",
+            "spotlight",
+            "notification",
+            "control center",
+        ],
+        "Storage & iCloud Support": [
+            "storage",
+            "icloud",
+            "backup",
+            "restore",
+            "sync",
+            "photos sync",
+        ],
+        "Data Transfer & Migration": [
+            "transfer",
+            "move data",
+            "migration",
+            "new iphone",
+            "old iphone",
+            "android",
+            "quick start",
+        ],
+        "Account & Apple ID Support": [
+            "apple id",
+            "icloud account",
+            "sign in",
+            "login",
+            "password",
+            "account",
+        ],
     })
