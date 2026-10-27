@@ -1,43 +1,45 @@
 """
 Module Thu nap va Xay dung Tang Bronze (Streaming Zstandard Decompression -> Parquet Snappy).
 """
-from pathlib import Path
-from typing import Dict, Iterator, Any, List
-import json
 import hashlib
+import io
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
 import pandas as pd
 import zstandard as zstd
 
 
-def stream_zst_json(path: Path | str, chunk_size: int = 1024 * 1024) -> Iterator[Dict[str, Any]]:
+def stream_zst_json(path: Path | str) -> Iterator[dict[str, Any]]:
     """
     Doc file .zst chua NDJSON/JSONL theo streaming bang thu vien zstandard (window size = 2^31).
     Yield tung JSON object ma khong can giai nen toan bo tep tin ra o dia.
     """
+    path = Path(path)
+
+    if not path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    if path.stat().st_size == 0:
+        raise ValueError(f"File is empty: {path}")
+
+    
     dctx = zstd.ZstdDecompressor(max_window_size=2**31)
-    with open(path, "rb") as compressed_file:
-        with dctx.stream_reader(compressed_file) as reader:
-            buffer = ""
-            while True:
-                chunk = reader.read(chunk_size)
-                if not chunk:
-                    break
-                buffer += chunk.decode("utf-8", errors="replace")
-                lines = buffer.split("\n")
-                buffer = lines.pop()
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-            if buffer.strip():
-                try:
-                    yield json.loads(buffer)
-                except json.JSONDecodeError:
-                    pass
+    with open(path, "rb") as compressed_file,\
+        dctx.stream_reader(compressed_file) as reader,\
+            io.TextIOWrapper(reader, encoding="utf-8", errors="replace") as text_stream:
+        for line in text_stream:
+            line = line.strip()
+
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {e} | Line: {line[:100]}...")
+                continue
 
 
 def extract_subreddit(
@@ -45,11 +47,20 @@ def extract_subreddit(
     output_path: Path | str,
     subreddit: str = "iphone",
     progress_every: int = 1_000_000
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """
     Doc truc tiep stream cua du lieu Reddit goc (.zst) va loc ghi lai cac ban ghi
     thuoc ve mot subreddit cu the (mac dinh la 'iphone') vao file JSONL dich.
     """
+    if not Path(input_path).is_file():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    if Path(input_path).stat().st_size == 0:
+        raise ValueError(f"Input file is empty: {input_path}")
+
+    if progress_every <= 0:
+        raise ValueError("progress_every must be a positive integer")
+    
     total = 0
     matched = 0
     missing_subreddit = 0
@@ -117,20 +128,35 @@ def build_bronze_parquet(
     jsonl_path: Path | str,
     parquet_path: Path | str,
     ingest_source: str = "reddit_academic_torrents",
-    ingest_period: str = "2026-07",
+    ingest_period: str | None = None,
     ingest_scope: str = "r/iphone"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Chuyen doi file JSONL da loc sang dinh dang Bronze Parquet (Snappy compression),
     tuan tu hoa cac cot nested JSON va bo sung Audit Metadata + kiem dinh SHA-256.
     """
+    if not Path(jsonl_path).is_file():
+        raise FileNotFoundError(f"JSONL file not found: {jsonl_path}")
+
+    if Path(jsonl_path).stat().st_size == 0:
+        raise ValueError(f"JSONL file is empty: {jsonl_path}")
+    
+    if ingest_period is None:
+        raise ValueError("ingest_period is required, e.g. '2026-01'")
+
     jsonl_path = Path(jsonl_path)
     parquet_path = Path(parquet_path)
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
     bronze_posts = pd.read_json(jsonl_path, lines=True)
 
-    nested_columns: List[str] = []
+    if "id" not in bronze_posts.columns:
+        raise ValueError("Bronze source does not contain required field: id")
+
+    missing_id_count = int(bronze_posts["id"].isna().sum())
+    duplicate_id_count = int(bronze_posts["id"].duplicated().sum())
+
+    nested_columns: list[str] = []
     for column in bronze_posts.columns:
         has_nested = bronze_posts[column].apply(lambda x: isinstance(x, (dict, list))).any()
         if has_nested:
@@ -150,9 +176,27 @@ def build_bronze_parquet(
     )
 
     bronze_check = pd.read_parquet(parquet_path)
-    assert len(bronze_check) == len(bronze_posts), "Row count mismatch after Parquet write!"
-    assert bronze_check["id"].duplicated().sum() == 0, "Duplicate IDs detected in Bronze Parquet!"
-    assert bronze_check["subreddit"].str.lower().eq(ingest_scope.replace("r/", "").lower()).all(), "Subreddit scope mismatch!"
+    expected_subreddit = (
+        ingest_scope
+        .strip()
+        .removeprefix("r/")
+        .lower()
+    )
+    if len(bronze_check) != len(bronze_posts):
+        raise RuntimeError(
+            "Row count mismatch after Parquet write"
+        )
+    if not (
+        bronze_check["subreddit"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .eq(expected_subreddit)
+        .all()
+    ):
+        raise RuntimeError(
+            "Subreddit scope mismatch after Parquet write"
+        )
 
     json_size_mb = jsonl_path.stat().st_size / (1024 ** 2)
     parquet_size_mb = parquet_path.stat().st_size / (1024 ** 2)
@@ -166,5 +210,7 @@ def build_bronze_parquet(
         "json_size_mb": round(json_size_mb, 2),
         "parquet_size_mb": round(parquet_size_mb, 2),
         "compression_saving_pct": round(compression_ratio, 2),
-        "sha256": checksum
+        "sha256": checksum,
+        "missing_id_count": missing_id_count,
+        "duplicate_id_count": duplicate_id_count
     }
