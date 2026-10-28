@@ -39,11 +39,20 @@ def build_s3a_options(storage_cfg: StorageConfig, hadoop_version: str) -> dict[s
     }
     if storage_cfg.s3_provider == "aws":
         options.update({
-            "spark.hadoop.fs.s3a.aws.credentials.provider": "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider",
-            "spark.hadoop.fs.s3a.endpoint.region": storage_cfg.aws_region,
-            "spark.hadoop.fs.s3a.endpoint": f"s3.{storage_cfg.aws_region}.amazonaws.com",
-            "spark.hadoop.fs.s3a.path.style.access": "false",
-            "spark.hadoop.fs.s3a.connection.ssl.enabled": "true",
+            "spark.hadoop.fs.s3a.aws.credentials.provider":
+                "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider",
+
+            "spark.hadoop.fs.s3a.endpoint.region":
+                storage_cfg.aws_region,
+
+            "spark.hadoop.fs.s3a.endpoint":
+                f"s3.{storage_cfg.aws_region}.amazonaws.com",
+
+            "spark.hadoop.fs.s3a.path.style.access":
+                "false",
+
+            "spark.hadoop.fs.s3a.connection.ssl.enabled":
+                "true",
         })
     elif storage_cfg.s3_provider == "minio":
         if not storage_cfg.s3_endpoint or not storage_cfg.s3_access_key or not storage_cfg.s3_secret_key:
