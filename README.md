@@ -99,6 +99,10 @@ reddit-iphone-feedback-pipeline-main/
 └── README.md
 ```
 
+## Application (BrandVoice)
+
+The web application that serves BR01–BR10 to end users lives in `application/` (FastAPI + React). See `application/README.md`; `docker compose up --build` starts it on http://localhost:8080 against the PostgreSQL serving layer configured in `.env`.
+
 ## Quick Start
 
 1. Install dependencies:
