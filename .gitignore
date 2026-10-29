@@ -58,3 +58,7 @@ Thumbs.db
 *.swo
 *.log
 logs/
+
+# Node / web app
+node_modules/
+application/web/dist/
