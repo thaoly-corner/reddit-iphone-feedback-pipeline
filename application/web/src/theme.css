@@ -1,0 +1,300 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* ------------------------------------------------------------------
+   BrandVoice design tokens — "ops console"
+   cool neutrals, one electric accent, one signal colour for alerts,
+   grotesk display / humanist UI / mono figures
+   ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+  --paper: #eef0f3;
+  --surface: #ffffff;
+  --surface-2: #f5f6f8;
+  --surface-3: #e6e8ec;
+  --ink: #0b0d10;
+  --ink-2: #4b515b;
+  --ink-3: #8a9099;
+  --line: #dfe2e7;
+  --line-2: #c2c7cf;
+  --accent: #2b5cff;
+  --accent-soft: #e3eaff;
+  --accent-ink: #ffffff;
+  --signal: #8ad400;
+  --pos: #1f7a1f;
+  --neu: #8f949c;
+  --neg: #d23b2f;
+  --status-good: #0ca30c;
+  --status-warn: #c98500;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --s5: #e87ba4;
+  --s6: #6250d6;
+  --s7: #8a9099;
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #5598e7;
+  --seq-4: #256abf;
+  --seq-5: #0d366b;
+  --font-display: 'Bricolage Grotesque', 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #0b0d10;
+  --surface: #13161b;
+  --surface-2: #191d23;
+  --surface-3: #22272f;
+  --ink: #eef0f3;
+  --ink-2: #aeb4bd;
+  --ink-3: #6f7681;
+  --line: #242930;
+  --line-2: #343a44;
+  --accent: #5b8cff;
+  --accent-soft: #15213f;
+  --accent-ink: #0b0d10;
+  --signal: #c6ff4a;
+  --pos: #4ab85a;
+  --neu: #6f7681;
+  --neg: #ef6a5c;
+  --status-warn: #fab219;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+  --s5: #d55181;
+  --s6: #9085e9;
+  --s7: #6f7681;
+  --seq-1: #184f95;
+  --seq-2: #256abf;
+  --seq-3: #3987e5;
+  --seq-4: #6da7ec;
+  --seq-5: #b7d3f6;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-signal: var(--signal);
+  --color-pos: var(--pos);
+  --color-neu: var(--neu);
+  --color-neg: var(--neg);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ---------- type ---------- */
+.display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  font-variation-settings: 'opsz' 96;
+}
+
+.display-md {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variation-settings: 'opsz' 24;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+.hairline {
+  border-color: var(--line);
+}
+
+.rule {
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- panels ---------- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* ---------- controls ---------- */
+.btn {
+  @apply inline-flex items-center gap-1.5 h-8 px-3 text-[12.5px] font-medium rounded-full border border-line bg-surface text-ink-2 hover:text-ink hover:border-line-2 transition-colors disabled:opacity-40;
+}
+.btn[aria-pressed='true'],
+.btn.is-active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.chip {
+  @apply inline-flex items-center gap-1.5 h-[22px] px-2 rounded-md text-[11.5px] font-medium bg-surface-2 text-ink-2;
+}
+
+.field {
+  @apply h-8 px-2.5 text-[12.5px] rounded-full border border-line bg-surface text-ink outline-none focus:border-accent min-w-0;
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+}
+input[type='date'] {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+/* ---------- tables ---------- */
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.data th {
+  @apply text-left py-2 border-b border-line font-medium;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+table.data td {
+  @apply py-2 border-b border-line align-top;
+}
+table.data tr:last-child td {
+  border-bottom: 0;
+}
+table.data tr:hover td {
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+}
+table.data th,
+table.data td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+table.data th:first-child,
+table.data td:first-child {
+  padding-left: 0;
+}
+table.data th:last-child,
+table.data td:last-child {
+  padding-right: 0;
+}
+
+.swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.fade-in {
+  animation: fade 0.3s ease-out both;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* live dot used in the top bar */
+.pulse {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--signal);
+}
+.pulse::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  border: 1px solid var(--signal);
+  opacity: 0.6;
+  animation: ring 2.4s ease-out infinite;
+}
+@keyframes ring {
+  from {
+    transform: scale(0.5);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
