@@ -1,0 +1,13 @@
+*.pdf
+notebooks/
+docs/
+tests/
+scripts/
+ingestion/
+nlp/
+processing/
+serving/
+infrastructure/
+application/web/node_modules/
+application/web/dist/
+application/api/.pytest_cache/
