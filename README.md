@@ -8,7 +8,6 @@ Configured centrally in `config/pipeline_config.py` (`PipelineExecutionConfig`):
 
 - **Ingestion (`ingestion/`)**:
   - **Historical Batch**: Torrent download (`ingestion/historical/download/`), streaming `.zst` decompression & Bronze Parquet generation (`ingestion/historical/extract/`), and statistical data profiling (`ingestion/historical/profiling/`).
-  - **Real-time Streaming**: Reddit API (`PRAW`) producer publishing to Apache Kafka (`ingestion/streaming/reddit/`).
 - **Silver Layer & NLP (`processing/batch/` & `nlp/`)**:
   - **Main Tech**: PySpark DataFrame deduplication (`processing/batch/bronze_to_silver/spark_cleaner.py`), Regex Entity & Issue Taxonomy extraction (`nlp/`), and Vectorized Arrow Pandas UDF with Hugging Face RoBERTa (`nlp/sentiment/roberta_sentiment.py`).
   - **Alternative Tech**: Distributed Rule/VADER-style Lexicon Pandas UDF (`nlp/sentiment/alternatives/lexicon_sentiment.py`), Hadoop MapReduce RDD (`processing/batch/bronze_to_silver/alternatives/hadoop_mapreduce_silver.py`), and DuckDB In-Process Vectorized SQL (`processing/batch/bronze_to_silver/alternatives/duckdb_vectorized_silver.py`).
