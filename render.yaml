@@ -1,0 +1,31 @@
+# Render Blueprint for the BrandVoice API (FastAPI). Deploys from the repository root.
+# Render dashboard -> New -> Blueprint -> pick this repo. Fill the sync:false secrets once in the dashboard.
+services:
+  - type: web
+    name: brandvoice-api
+    runtime: docker
+    plan: free
+    region: singapore
+    rootDir: application/api
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: DB_SSLMODE
+        value: require
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_NAME
+        value: voc_analytics
+      - key: DB_HOST
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: API_CORS_ORIGINS
+        value: https://brandvoice.vercel.app
+      - key: API_CACHE_TTL
+        value: "300"
