@@ -52,20 +52,27 @@ def build_support_demand_mart(silver_df: DataFrame) -> DataFrame:
 def build_gold_datamarts(
     spark: SparkSession,
     storage_cfg: StorageConfig,
-    exec_cfg: Optional[PipelineExecutionConfig] = None
+    exec_cfg: Optional[PipelineExecutionConfig] = None,
+    window_start_date: Optional[str] = None,
 ) -> Dict[str, DataFrame]:
     """
     Preserve BR01 -> BR08 and add recurring issues and support demand marts.
     Tu dong chuyen doi Engine tinh toan theo PipelineExecutionConfig.
+    Toi uu scale-up: khong cache toan bo Silver vao RAM, ho tro loc theo cua so thoi gian,
+    phan vung theo feedback_year va lay Top 50 bai khieu nai moi thang (BR06).
     """
     if exec_cfg is None:
         exec_cfg = PipelineExecutionConfig()
 
-    silver_df = spark.read.parquet(storage_cfg.silver_posts_path).cache()
+    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
+    silver_df = spark.read.parquet(storage_cfg.silver_posts_path)
+    if window_start_date is not None:
+        silver_df = silver_df.filter(F.col("feedback_date") >= F.to_date(F.lit(window_start_date)))
+
     gold_base = storage_cfg.gold_base_path
     marts: Dict[str, DataFrame] = {}
 
-    # BR01: Feedback Volume Over Time
+    # BR01: Feedback Volume Over Time (Partitioned by feedback_year)
     br01_df = (
         silver_df
         .groupBy(
@@ -79,12 +86,13 @@ def build_gold_datamarts(
             F.sum(F.lit(1) + F.col("num_comments")).alias("total_discussion_units"),
             F.round(F.avg("engagement_score"), 2).alias("avg_engagement_score")
         )
+        .withColumn("feedback_year", F.year(F.col("feedback_date")))
         .orderBy("feedback_date")
     )
-    br01_df.write.mode("overwrite").parquet(f"{gold_base}/feedback_volume")
+    br01_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/feedback_volume")
     marts["feedback_volume"] = br01_df
 
-    # BR02: Issue Summary & Daily Core Grain (Pluggable Batch Engine)
+    # BR02: Issue Summary & Daily Core Grain (Pluggable Batch Engine, Partitioned by feedback_year)
     if exec_cfg.batch_gold_engine == "hadoop_mapreduce":
         build_gold_issue_summary_mapreduce(spark, storage_cfg)
         br02_df = spark.read.parquet(f"{gold_base}/issue_summary")
@@ -104,8 +112,9 @@ def build_gold_datamarts(
                 F.round(F.avg("sentiment_score"), 4).alias("avg_sentiment_score"),
                 F.round(F.avg("engagement_score"), 2).alias("avg_engagement_score")
             )
+            .withColumn("feedback_year", F.year(F.col("feedback_date")))
         )
-        br02_df.write.mode("overwrite").parquet(f"{gold_base}/issue_summary")
+        br02_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/issue_summary")
     marts["issue_summary"] = br02_df
 
     # BR03: Emerging Issues Detection (Pluggable Stream / Window Engine)
@@ -117,7 +126,7 @@ def build_gold_datamarts(
         br03_df.write.mode("overwrite").parquet(f"{gold_base}/emerging_issues")
     marts["emerging_issues"] = br03_df
 
-    # BR04: Sentiment Distribution Summary
+    # BR04: Sentiment Distribution Summary (Partitioned by feedback_year)
     br04_df = (
         silver_df
         .groupBy("feedback_date", "iphone_model", "sentiment")
@@ -125,14 +134,15 @@ def build_gold_datamarts(
             F.count("post_id").alias("post_count"),
             F.round(F.avg("sentiment_score"), 4).alias("mean_sentiment_score")
         )
+        .withColumn("feedback_year", F.year(F.col("feedback_date")))
     )
-    br04_df.write.mode("overwrite").parquet(f"{gold_base}/sentiment_summary")
+    br04_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/sentiment_summary")
     marts["sentiment_summary"] = br04_df
 
-    # BR05: Feature Feedback Matrix
+    # BR05: Feature Feedback Matrix (Multi-year trend support via feedback_year)
     br05_df = (
         silver_df
-        .groupBy("feature_category", "issue_category")
+        .groupBy("feedback_year", "feature_category", "issue_category")
         .agg(
             F.count("post_id").alias("mention_count"),
             F.sum(F.when(F.col("sentiment") == "NEGATIVE", 1).otherwise(0)).alias("negative_mentions"),
@@ -143,24 +153,29 @@ def build_gold_datamarts(
             ).alias("negative_ratio_pct"),
             F.round(F.avg("engagement_score"), 2).alias("avg_engagement")
         )
-        .orderBy(F.col("mention_count").desc())
+        .orderBy(F.col("feedback_year").desc(), F.col("mention_count").desc())
     )
-    br05_df.write.mode("overwrite").parquet(f"{gold_base}/feature_feedback")
+    br05_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/feature_feedback")
     marts["feature_feedback"] = br05_df
 
-    # BR06: High-Impact Negative Complaints
+    # BR06: High-Impact Negative Complaints (Top 50 per month via Window to avoid multi-year bias)
+    w_top_monthly = Window.partitionBy("feedback_year", "feedback_month").orderBy(
+        F.col("engagement_score").desc(), F.col("impact_index").desc()
+    )
     br06_df = (
         silver_df
         .filter(F.col("sentiment") == "NEGATIVE")
+        .withColumn("_monthly_rank", F.row_number().over(w_top_monthly))
+        .filter(F.col("_monthly_rank") <= 50)
         .select(
-            "post_id", "feedback_date", "iphone_model", "ios_version",
+            "post_id", "feedback_date", "feedback_year", "feedback_month",
+            "iphone_model", "ios_version",
             "feature_category", "issue_category", "title", "permalink",
             "reddit_score", "num_comments", "engagement_score", "impact_index", "sentiment_score"
         )
-        .orderBy(F.col("engagement_score").desc())
-        .limit(500)
+        .orderBy(F.col("feedback_date").desc(), F.col("engagement_score").desc())
     )
-    br06_df.write.mode("overwrite").parquet(f"{gold_base}/high_impact_complaints")
+    br06_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/high_impact_complaints")
     marts["high_impact_complaints"] = br06_df
 
     # BR07: Weekly Issue Growth Trends (WoW)
@@ -181,14 +196,15 @@ def build_gold_datamarts(
                 F.round(((F.col("weekly_volume") - F.col("prev_week_volume")) * 100.0) / F.col("prev_week_volume"), 2)
             ).otherwise(F.lit(0.0))
         )
+        .withColumn("feedback_year", F.year(F.col("week_start")))
     )
-    br07_df.write.mode("overwrite").parquet(f"{gold_base}/issue_trends")
+    br07_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/issue_trends")
     marts["issue_trends"] = br07_df
 
-    # BR08: Model & OS Version Multi-dimensional Comparison
+    # BR08: Model & OS Version Multi-dimensional Comparison (With feedback_year dimension)
     br08_df = (
         silver_df
-        .groupBy("iphone_model", "ios_version", "feature_category")
+        .groupBy("feedback_year", "iphone_model", "ios_version", "feature_category")
         .agg(
             F.count("post_id").alias("total_feedback"),
             F.round(F.avg("sentiment_score"), 4).alias("avg_sentiment"),
@@ -199,7 +215,7 @@ def build_gold_datamarts(
             F.round(F.avg("engagement_score"), 2).alias("avg_engagement")
         )
     )
-    br08_df.write.mode("overwrite").parquet(f"{gold_base}/model_comparison")
+    br08_df.write.mode("overwrite").partitionBy("feedback_year").parquet(f"{gold_base}/model_comparison")
     marts["model_comparison"] = br08_df
 
     marts["recurring_issues"] = build_recurring_issues_mart(silver_df)
@@ -207,5 +223,4 @@ def build_gold_datamarts(
     for name in ("recurring_issues", "support_demand"):
         marts[name].write.mode("overwrite").parquet(f"{gold_base}/{name}")
 
-    silver_df.unpersist()
     return marts

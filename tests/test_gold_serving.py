@@ -82,3 +82,19 @@ def test_explicit_sqlite_backend_overrides_postgres_url(adapter) -> None:
     )
     assert loader.is_sqlite
     assert loader.db_cfg.sqlalchemy_url == "sqlite:///:memory:"
+
+
+def test_partition_scoped_gold_mart_sync_avoids_full_replace(adapter, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = MagicMock()
+    frame.__len__.return_value = 3
+    frame.columns = ["feedback_year", "issue_category", "total_posts"]
+    reader = Mock(return_value=frame)
+    monkeypatch.setattr(adapter, "_read_gold_mart", reader)
+    conn = adapter.engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.scalar_one.return_value = 3
+    counts = adapter.sync_gold_marts(spark=Mock(), mart_names=["issue_summary"], partition_year=2026)
+    assert counts == {"gold_issue_summary": 3}
+    reader.assert_called_once_with("issue_summary", reader.call_args.args[1], partition_year=2026)
+    assert frame.to_sql.call_args.kwargs["if_exists"] == "append"
+    executed_sqls = [call.args[0] for call in conn.execute.call_args_list]
+    assert any('DELETE FROM "gold_issue_summary" WHERE feedback_year = :yr' in sql for sql in executed_sqls)

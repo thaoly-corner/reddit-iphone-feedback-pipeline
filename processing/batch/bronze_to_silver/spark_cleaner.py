@@ -22,6 +22,7 @@ def build_spark_session(app_name: str, storage_cfg: StorageConfig) -> SparkSessi
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
         .config("spark.sql.execution.arrow.maxRecordsPerBatch", "256")
         .config("spark.sql.parquet.compression.codec", "snappy")
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         .config("spark.sql.session.timeZone", "UTC")
     )

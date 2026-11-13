@@ -38,37 +38,71 @@ class UnifiedServingPipelineLoader:
             Path(self.db_cfg.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(self.db_cfg.sqlalchemy_url, pool_pre_ping=True)
 
-    def _read_gold_mart(self, name: str, spark: 'SparkSession | None' = None) -> pd.DataFrame:
+    def _read_gold_mart(
+        self,
+        name: str,
+        spark: 'SparkSession | None' = None,
+        partition_year: int | None = None,
+    ) -> pd.DataFrame:
         if name not in GOLD_MART_NAMES:
             raise ValueError(f"Unknown Gold mart: {name}")
         path = f"{self.storage_cfg.gold_base_path}/{name}"
         if spark is not None:
             # Spark already has the correct AWS anonymous/MinIO S3A settings.
-            return spark.read.parquet(path).toPandas()
+            sdf = spark.read.parquet(path)
+            if partition_year is not None and "feedback_year" in sdf.columns:
+                from pyspark.sql import functions as F
+                sdf = sdf.filter(F.col("feedback_year") == int(partition_year))
+            return sdf.toPandas()
         if self.storage_cfg.use_s3:
             raise ValueError("Pass spark= to load S3/MinIO Gold with the configured S3A credentials")
+        if partition_year is not None:
+            try:
+                return pd.read_parquet(path, filters=[("feedback_year", "==", int(partition_year))])
+            except Exception:
+                df = pd.read_parquet(path)
+                return df[df["feedback_year"] == int(partition_year)] if "feedback_year" in df.columns else df
         return pd.read_parquet(path)
 
     def sync_gold_marts(
         self,
         spark: 'SparkSession | None' = None,
         mart_names: Sequence[str] | None = None,
+        partition_year: int | None = None,
     ) -> dict[str, int]:
         """Refresh gold_* serving copies; S3 Gold remains canonical.
 
-        Gold aggregates are collected on the driver for the existing SQLAlchemy
-        adapter. Use mart_names for older datasets containing only legacy marts.
+        When `partition_year` is specified, only the target year partition is
+        pulled into driver memory and atomically refreshed in-place (avoiding
+        full-table drop downtime and multi-year driver OOM).
         """
         names = tuple(GOLD_MART_NAMES if mart_names is None else mart_names)
         if not set(names).issubset(GOLD_MART_NAMES):
             raise ValueError("mart_names must contain only registered Gold mart names")
         counts = {}
         for name in names:
-            frame = self._read_gold_mart(name, spark)
+            frame = (
+                self._read_gold_mart(name, spark)
+                if partition_year is None
+                else self._read_gold_mart(name, spark, partition_year=partition_year)
+            )
             table = f"gold_{name}"
             with self.engine.begin() as conn:
-                frame.to_sql(table, conn, if_exists="replace", index=False, chunksize=1000, method="multi")
-                count = int(conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
+                if partition_year is not None and "feedback_year" in getattr(frame, "columns", ()):
+                    conn.execute(
+                        text(f'DELETE FROM "{table}" WHERE feedback_year = :yr'),
+                        {"yr": int(partition_year)},
+                    )
+                    frame.to_sql(table, conn, if_exists="append", index=False, chunksize=1000, method="multi")
+                    count = int(
+                        conn.execute(
+                            text(f'SELECT COUNT(*) FROM "{table}" WHERE feedback_year = :yr'),
+                            {"yr": int(partition_year)},
+                        ).scalar_one()
+                    )
+                else:
+                    frame.to_sql(table, conn, if_exists="replace", index=False, chunksize=1000, method="multi")
+                    count = int(conn.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one())
                 if count != len(frame):
                     raise RuntimeError(f"Serving row count mismatch for {table}: {count} != {len(frame)}")
             counts[table] = count
@@ -180,11 +214,29 @@ class UnifiedServingPipelineLoader:
             for stmt in stmts:
                 conn.execute(text(stmt))
 
-    def sync_dimensions_and_facts(self, spark: 'SparkSession | None' = None) -> Dict[str, Any]:
-        """Dong bo du lieu tu Gold Parquet vao cac bang cua Schema Paradigm duoc cau hinh."""
-        df_summary = self._read_gold_mart("issue_summary", spark)
-        df_emerging = self._read_gold_mart("emerging_issues", spark)
-        df_complaints = self._read_gold_mart("high_impact_complaints", spark)
+    def sync_dimensions_and_facts(
+        self,
+        spark: 'SparkSession | None' = None,
+        partition_year: int | None = None,
+    ) -> Dict[str, Any]:
+        """Dong bo du lieu tu Gold Parquet vao cac bang cua Schema Paradigm duoc cau hinh.
+        Ho tro nap theo partition_year bang co che ON CONFLICT DO UPDATE (Idempotent Upsert).
+        """
+        df_summary = (
+            self._read_gold_mart("issue_summary", spark)
+            if partition_year is None
+            else self._read_gold_mart("issue_summary", spark, partition_year=partition_year)
+        )
+        df_emerging = (
+            self._read_gold_mart("emerging_issues", spark)
+            if partition_year is None
+            else self._read_gold_mart("emerging_issues", spark, partition_year=partition_year)
+        )
+        df_complaints = (
+            self._read_gold_mart("high_impact_complaints", spark)
+            if partition_year is None
+            else self._read_gold_mart("high_impact_complaints", spark, partition_year=partition_year)
+        )
 
         with self.engine.begin() as conn:
             unique_dates = pd.to_datetime(df_summary["feedback_date"].unique())

@@ -93,15 +93,18 @@ def run_silver_pipeline(
     spark: SparkSession,
     storage_cfg: StorageConfig,
     taxonomy_cfg: DomainTaxonomyConfig,
-    exec_cfg: PipelineExecutionConfig | None = None
+    exec_cfg: PipelineExecutionConfig | None = None,
+    partition_filter: tuple[int, int] | None = None,
 ) -> DataFrame:
     """
     Thuc thi day du Pipeline Tang Silver (Bronze Parquet -> Silver Partitioned Parquet)
     dua tren cong nghe `silver_engine` duoc chon trong PipelineExecutionConfig.
+    Ho tro Dynamic Partition Overwrite de chi ghi de dung partition thang moi khi scale-up.
     """
     if exec_cfg is None:
         exec_cfg = PipelineExecutionConfig()
 
+    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     engine_choice = exec_cfg.silver_engine
 
     if engine_choice == "hadoop_mapreduce_silver":
@@ -113,6 +116,11 @@ def run_silver_pipeline(
 
     # Default PySpark DataFrame Pipeline ('pyspark_roberta' or 'pyspark_lexicon')
     bronze_df = spark.read.parquet(storage_cfg.bronze_posts_path)
+    if partition_filter is not None and {"year", "month"}.issubset(bronze_df.columns):
+        target_year, target_month = partition_filter
+        bronze_df = bronze_df.filter(
+            (F.col("year") == target_year) & (F.col("month") == target_month)
+        )
     dedup_df = deduplicate_bronze_posts(bronze_df)
 
     extraction_udf = create_text_recovery_and_taxonomy_udf(taxonomy_cfg)

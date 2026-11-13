@@ -16,8 +16,14 @@ def _matrix(f: Filters) -> tuple[pd.DataFrame, str]:
     if not sliced:
         where, params = f.where({"feature_category", "issue_category"})
         df = query_df(
-            f"""SELECT feature_category, issue_category, mention_count, negative_mentions, positive_mentions,
-                       negative_ratio_pct, avg_engagement FROM gold_feature_feedback{where}""", params, f.stats,
+            f"""SELECT feature_category, issue_category,
+                       SUM(mention_count) AS mention_count,
+                       SUM(negative_mentions) AS negative_mentions,
+                       SUM(positive_mentions) AS positive_mentions,
+                       ROUND((SUM(negative_mentions) * 100.0 / NULLIF(SUM(mention_count), 0))::numeric, 2) AS negative_ratio_pct,
+                       ROUND((SUM(avg_engagement * mention_count) / NULLIF(SUM(mention_count), 0))::numeric, 2) AS avg_engagement
+                FROM gold_feature_feedback{where}
+                GROUP BY feature_category, issue_category""", params, f.stats,
         )
         return df, "gold_feature_feedback"
     where, params = f.where({"feedback_date", "iphone_model", "ios_version", "feature_category", "issue_category"})
